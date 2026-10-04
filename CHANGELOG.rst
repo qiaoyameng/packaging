@@ -4,6 +4,20 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :func:`packaging.metadata_check.check_metadata_consistency`, which
+  checks a wheels Core Metadata against an sdists static metadata promises
+  under the `PEP 643
+  <https://peps.python.org/pep-0643/>`_ Dynamic rules (with PEP 808 partial
+  dynamic semantics for ``Metadata-Version`` 2.6). Name, Version, and
+  Metadata-Version are checked strictly, multi-valued fields are compared
+  semantically (ignoring irrelevant ordering, name normalization, and marker
+  formatting), and differences that cannot be proven equivalent are reported
+  as uncertain rather than as violations. Inputs are accepted as raw email
+  text, :class:`~packaging.metadata.RawMetadata`, or
+  :class:`~packaging.metadata.Metadata`, and are never modified.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)

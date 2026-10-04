@@ -1,0 +1,7 @@
+Metadata-Version: 2.3
+Name: example-pkg
+Version: 3.1.4
+Summary: An example package with fully static metadata.
+Requires-Python: >=3.9
+Requires-Dist: requests==2.32.3
+Requires-Dist: click>=8.0

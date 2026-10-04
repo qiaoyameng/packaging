@@ -30,6 +30,7 @@ The ``packaging`` library uses calendar-based versioning (``YY.N``).
     licenses
     requirements
     metadata
+    metadata_check
     tags
     pylock
     direct_url
