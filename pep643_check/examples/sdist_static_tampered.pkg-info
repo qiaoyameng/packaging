@@ -1,0 +1,10 @@
+Metadata-Version: 2.2
+Name: demo-pkg
+Version: 1.0.0
+Summary: Demo distribution
+Author: Demo Team
+License-Expression: MIT
+Classifier: Development Status :: 5 - Production/Stable
+Requires-Python: >=3.10
+Requires-Dist: click>=8.0; python_version >= "3.10"
+Requires-Dist: requests>=2.0

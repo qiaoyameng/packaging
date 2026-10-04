@@ -1,0 +1,8 @@
+Metadata-Version: 2.2
+Name: demo-dynamic
+Version: 1.0.0
+Summary: Static summary
+Dynamic: Requires-Dist
+Dynamic: Classifier
+Requires-Dist: click>=8.0
+Classifier: Development Status :: 4 - Beta

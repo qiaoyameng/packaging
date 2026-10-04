@@ -1,0 +1,8 @@
+Metadata-Version: 2.2
+Name: demo-dynamic
+Version: 1.0.0
+Summary: Static summary
+Dynamic: Classifier
+Dynamic: Requires-Dist
+Classifier: Development Status :: 5 - Production/Stable
+Requires-Dist: requests>=2.31 ; platform_system == "Linux"
