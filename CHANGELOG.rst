@@ -4,6 +4,14 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :mod:`packaging.merger`, merging ``Requires-Dist`` requirements from
+  multiple sources over a target environment matrix: markers are evaluated
+  per target and selected extras, version ranges and extras are merged per
+  normalized package name, direct URL compatibility follows explicit rules,
+  and conflicts are reported as deletion-minimal cores with their sources.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)
