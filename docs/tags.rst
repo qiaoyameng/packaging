@@ -44,6 +44,11 @@ items that applications should need to reference, in order to parse and check ta
 
 .. autofunction:: parse_tag
 
+.. autofunction:: compress_tags
+
+.. autoclass:: CompressedTags
+   :members:
+
 .. autofunction:: sys_tags
 
 .. autofunction:: create_compatible_tags_selector

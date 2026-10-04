@@ -265,6 +265,174 @@ class TestParseTag:
             tags.parse_tag(tag)
 
 
+class TestCompressTags:
+    @staticmethod
+    def expand(result: tags.CompressedTags) -> set[tags.Tag]:
+        expanded: set[tags.Tag] = set()
+        for expression in result.expressions:
+            expanded |= tags.parse_tag(expression, validate_order=True)
+        return expanded
+
+    def test_empty(self) -> None:
+        result = tags.compress_tags([])
+        assert result.expressions == ()
+        assert result.optimal
+        assert result.strategy == "exact"
+
+    def test_single_tag(self) -> None:
+        result = tags.compress_tags([tags.Tag("py3", "none", "any")])
+        assert result.expressions == ("py3-none-any",)
+        assert result.optimal
+        assert result.strategy == "exact"
+
+    def test_full_rectangle(self) -> None:
+        given = {
+            tags.Tag(interpreter, abi, platform)
+            for interpreter in ("cp39", "cp310")
+            for abi in ("abi3", "none")
+            for platform in ("win32", "win_amd64")
+        }
+        result = tags.compress_tags(given)
+        assert result.expressions == ("cp310.cp39-abi3.none-win32.win_amd64",)
+        assert result.optimal
+        assert self.expand(result) == given
+
+    def test_non_complete_rectangle(self) -> None:
+        # An L-shape that no single rectangle covers.
+        given = {
+            tags.Tag("py3", "none", "any"),
+            tags.Tag("py3", "none", "manylinux1_x86_64"),
+            tags.Tag("py3", "abi3", "any"),
+        }
+        result = tags.compress_tags(given)
+        assert result.expressions == (
+            "py3-abi3.none-any",
+            "py3-none-any.manylinux1_x86_64",
+        )
+        assert result.optimal
+        assert self.expand(result) == given
+
+    def test_overlapping_rectangles(self) -> None:
+        # The minimum cover needs two rectangles overlapping at
+        # ("cp39", "abi3", "win32").
+        given = {
+            tags.Tag("cp39", "abi3", "win32"),
+            tags.Tag("cp39", "abi3", "win_amd64"),
+            tags.Tag("cp310", "abi3", "win32"),
+            tags.Tag("cp310", "abi3", "win_amd64"),
+            tags.Tag("cp39", "cp39", "win32"),
+        }
+        result = tags.compress_tags(given)
+        assert result.expressions == (
+            "cp310.cp39-abi3-win32.win_amd64",
+            "cp39-abi3.cp39-win32",
+        )
+        assert result.optimal
+        assert self.expand(result) == given
+
+    def test_deduplicates_and_ignores_input_order(self) -> None:
+        given = [
+            tags.Tag("py3", "none", "any"),
+            tags.Tag("py2", "none", "any"),
+            tags.Tag("py3", "none", "any"),
+            tags.Tag("py2", "none", "any"),
+        ]
+        result = tags.compress_tags(given)
+        assert result.expressions == ("py2.py3-none-any",)
+        assert self.expand(result) == set(given)
+        assert tags.compress_tags(reversed(given)) == result
+
+    def test_component_sorting_uses_string_order(self) -> None:
+        # "py10" sorts before "py2" as strings; the output must use that
+        # (PEP 425) order and remain parseable with validate_order=True.
+        given = {tags.Tag("py2", "none", "any"), tags.Tag("py10", "none", "any")}
+        result = tags.compress_tags(given)
+        assert result.expressions == ("py10.py2-none-any",)
+        assert self.expand(result) == given
+
+    def test_tie_break_is_deterministic(self) -> None:
+        # A 2x2x2 cube minus two opposite corners has two minimum covers
+        # of 3 expressions each; the lexicographically smallest sorted
+        # expression tuple must win.
+        given = {
+            tags.Tag(f"i{i}", f"a{a}", f"p{p}")
+            for i in (1, 2)
+            for a in (1, 2)
+            for p in (1, 2)
+        } - {tags.Tag("i1", "a1", "p1"), tags.Tag("i2", "a2", "p2")}
+        result = tags.compress_tags(given)
+        assert result.expressions == (
+            "i1-a1.a2-p2",
+            "i1.i2-a2-p1",
+            "i2-a1-p1.p2",
+        )
+        assert result.optimal
+        assert self.expand(result) == given
+
+    def test_column_wise_compression_would_add_illegal_tags(self) -> None:
+        # Compressing each column independently would produce the
+        # 8-combination expression below, including 4 illegal tags such as
+        # cp39-cp310-win32. Rectangle compression stays exact.
+        given = {
+            tags.Tag("cp39", "cp39", "win32"),
+            tags.Tag("cp39", "cp39", "win_amd64"),
+            tags.Tag("cp310", "cp310", "win32"),
+            tags.Tag("cp310", "cp310", "win_amd64"),
+        }
+        naive = "cp310.cp39-cp310.cp39-win32.win_amd64"
+        assert len(tags.parse_tag(naive)) == 8
+        assert tags.parse_tag(naive) != given
+
+        result = tags.compress_tags(given)
+        assert result.expressions == (
+            "cp310-cp310-win32.win_amd64",
+            "cp39-cp39-win32.win_amd64",
+        )
+        assert result.optimal
+        assert self.expand(result) == given
+
+    def test_greedy_single_expression_is_proven_optimal(self) -> None:
+        # 4x4x4 = 64 tags exceeds the default exact limit.
+        given = {
+            tags.Tag(f"i{i}", f"a{a}", f"p{p}")
+            for i in range(4)
+            for a in range(4)
+            for p in range(4)
+        }
+        result = tags.compress_tags(given)
+        assert result.strategy == "greedy"
+        assert result.expressions == (
+            "i0.i1.i2.i3-a0.a1.a2.a3-p0.p1.p2.p3",
+        )
+        assert result.optimal
+        assert self.expand(result) == given
+
+    def test_greedy_large_set_reports_not_proven_optimal(self) -> None:
+        # A 5x5x5 cube with one corner removed: 124 tags, no single
+        # rectangle covers it, and the greedy strategy cannot prove
+        # minimality.
+        given = {
+            tags.Tag(f"i{i}", f"a{a}", f"p{p}")
+            for i in range(5)
+            for a in range(5)
+            for p in range(5)
+        } - {tags.Tag("i0", "a0", "p0")}
+        result = tags.compress_tags(given)
+        assert result.strategy == "greedy"
+        assert not result.optimal
+        assert len(result.expressions) > 1
+        assert self.expand(result) == given
+
+    def test_exact_limit_is_respected(self) -> None:
+        given = [tags.Tag(f"i{i}", "a0", "p0") for i in range(4)]
+        exact = tags.compress_tags(given, exact_limit=4)
+        greedy = tags.compress_tags(given, exact_limit=3)
+        assert exact.strategy == "exact"
+        assert greedy.strategy == "greedy"
+        assert exact.expressions == greedy.expressions
+        assert self.expand(greedy) == set(given)
+
+
 class TestInterpreterName:
     def test_sys_implementation_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class MockImplementation:

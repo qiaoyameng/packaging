@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import functools
+import itertools
 import logging
 import operator
 import platform
@@ -16,6 +18,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from importlib.machinery import EXTENSION_SUFFIXES
 from typing import (
     TYPE_CHECKING,
+    NamedTuple,
     TypeVar,
     cast,
 )
@@ -30,6 +33,7 @@ if TYPE_CHECKING:
 __all__ = [
     "INTERPRETER_SHORT_NAMES",
     "AppleVersion",
+    "CompressedTags",
     "InvalidTag",
     "PythonVersion",
     "Tag",
@@ -37,6 +41,7 @@ __all__ = [
     "UnsortedTagsError",
     "android_platforms",
     "compatible_tags",
+    "compress_tags",
     "cpython_tags",
     "create_compatible_tags_selector",
     "generic_tags",
@@ -309,6 +314,294 @@ def parse_tag(
         for abi in abis
         for platform_ in platforms
     )
+
+
+class CompressedTags(NamedTuple):
+    """
+    The result of :func:`compress_tags`.
+
+    .. versionadded:: 26.4
+    """
+
+    #: Compressed tag expressions, sorted as strings. Parsing every
+    #: expression with :func:`parse_tag` and unioning the results
+    #: reproduces the exact set of tags passed to :func:`compress_tags`.
+    expressions: tuple[str, ...]
+    #: Whether the returned cover is proven to use the fewest possible
+    #: expressions. Always true for the ``"exact"`` strategy; may be
+    #: false for the ``"greedy"`` strategy.
+    optimal: bool
+    #: The strategy used to build the cover: ``"exact"`` or ``"greedy"``.
+    strategy: str
+
+
+#: Maximum number of distinct values per tag component for which
+#: :func:`compress_tags` enumerates all maximal rectangles exactly.
+_EXACT_DIMENSION_LIMIT = 6
+
+
+def _tag_sort_key(tag: Tag) -> tuple[str, str, str]:
+    return (tag.interpreter, tag.abi, tag.platform)
+
+
+def _format_compressed_tag(
+    interpreters: AbstractSet[str],
+    abis: AbstractSet[str],
+    platforms: AbstractSet[str],
+) -> str:
+    # PEP 425 requires compressed components to be sorted; Python string
+    # ordering gives a canonical, deterministic form.
+    return "-".join(
+        ".".join(sorted(component))
+        for component in (interpreters, abis, platforms)
+    )
+
+
+def _maximal_rectangles(
+    interpreters: list[str],
+    abis: list[str],
+    platforms: list[str],
+    cell_platforms: dict[tuple[str, str], frozenset[str]],
+) -> list[tuple[frozenset[str], frozenset[str], frozenset[str]]]:
+    """
+    Enumerate all maximal rectangles (Is x As x Ps) contained in the tag set.
+
+    A rectangle is maximal when it cannot be extended in any dimension while
+    remaining a subset of the tag set. An optimal cover by fewest expressions
+    always exists using only maximal rectangles, since any rectangle in a
+    cover can be grown to a maximal one without leaving the tag set.
+    """
+    empty: frozenset[str] = frozenset()
+    rectangles = set()
+    for i_count in range(1, len(interpreters) + 1):
+        for is_ in itertools.combinations(interpreters, i_count):
+            for a_count in range(1, len(abis) + 1):
+                for as_ in itertools.combinations(abis, a_count):
+                    ps: frozenset[str] | None = None
+                    for i in is_:
+                        for a in as_:
+                            cell = cell_platforms.get((i, a), empty)
+                            ps = cell if ps is None else ps & cell
+                            if not ps:
+                                break
+                        if not ps:
+                            break
+                    if not ps:
+                        continue
+                    iset, aset = frozenset(is_), frozenset(as_)
+                    # Maximality: no dimension can be extended.
+                    if any(
+                        i not in iset
+                        and all(ps <= cell_platforms.get((i, a), empty) for a in aset)
+                        for i in interpreters
+                    ):
+                        continue
+                    if any(
+                        a not in aset
+                        and all(ps <= cell_platforms.get((i, a), empty) for i in iset)
+                        for a in abis
+                    ):
+                        continue
+                    if any(
+                        p not in ps
+                        and all(
+                            p in cell_platforms.get((i, a), empty)
+                            for i in iset
+                            for a in aset
+                        )
+                        for p in platforms
+                    ):
+                        continue
+                    rectangles.add((iset, aset, ps))
+    return sorted(
+        rectangles,
+        key=lambda rect: tuple(sorted(component) for component in rect),
+    )
+
+
+def _exact_cover(
+    tags: list[Tag],
+    rectangles: list[tuple[frozenset[str], frozenset[str], frozenset[str]]],
+) -> tuple[str, ...]:
+    """
+    Find a minimum-cardinality cover of *tags* by *rectangles*.
+
+    The cost objective is fixed: minimize the number of expressions. Ties
+    are broken deterministically by choosing the lexicographically smallest
+    sorted tuple of expression strings.
+    """
+    index = {_tag_sort_key(tag): bit for bit, tag in enumerate(tags)}
+    by_element: list[list[tuple[int, str]]] = [[] for _ in tags]
+    for iset, aset, pset in rectangles:
+        mask = 0
+        for i in iset:
+            for a in aset:
+                for p in pset:
+                    mask |= 1 << index[(i, a, p)]
+        expression = _format_compressed_tag(iset, aset, pset)
+        for bit, tag in enumerate(tags):
+            if mask >> bit & 1:
+                by_element[bit].append((mask, expression))
+
+    @functools.lru_cache(maxsize=None)
+    def solve(remaining: int) -> tuple[str, ...]:
+        if remaining == 0:
+            return ()
+        lowest = remaining & -remaining
+        bit = lowest.bit_length() - 1
+        best: tuple[str, ...] | None = None
+        for mask, expression in by_element[bit]:
+            candidate = tuple(sorted(solve(remaining & ~mask) + (expression,)))
+            if best is None or (len(candidate), candidate) < (len(best), best):
+                best = candidate
+        assert best is not None  # Every tag belongs to a maximal rectangle.
+        return best
+
+    return solve((1 << len(tags)) - 1)
+
+
+def _grow_rectangle(
+    seed: Tag,
+    interpreters: list[str],
+    abis: list[str],
+    cell_platforms: dict[tuple[str, str], frozenset[str]],
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]] | None:
+    """
+    Grow a rectangle from a seed tag by alternately widening each dimension
+    until a fixpoint. The result is a valid rectangle contained in the tag
+    set, but is not guaranteed to be maximal; used as a bounded heuristic
+    candidate generator.
+    """
+    empty: frozenset[str] = frozenset()
+    iset: frozenset[str] = frozenset({seed.interpreter})
+    aset: frozenset[str] = frozenset({seed.abi})
+    pset = cell_platforms[(seed.interpreter, seed.abi)]
+    for _ in range(16):
+        new_iset = frozenset(
+            i
+            for i in interpreters
+            if all(pset <= cell_platforms.get((i, a), empty) for a in aset)
+        )
+        new_aset = frozenset(
+            a
+            for a in abis
+            if all(pset <= cell_platforms.get((i, a), empty) for i in new_iset)
+        )
+        new_pset: frozenset[str] | None = None
+        for i in new_iset:
+            for a in new_aset:
+                cell = cell_platforms.get((i, a), empty)
+                new_pset = cell if new_pset is None else new_pset & cell
+        new_pset = new_pset if new_pset is not None else empty
+        if not new_pset:
+            return None
+        if (new_iset, new_aset, new_pset) == (iset, aset, pset):
+            break
+        iset, aset, pset = new_iset, new_aset, new_pset
+    return iset, aset, pset
+
+
+def _greedy_cover(
+    tags: list[Tag],
+    interpreters: list[str],
+    abis: list[str],
+    cell_platforms: dict[tuple[str, str], frozenset[str]],
+) -> tuple[str, ...]:
+    """
+    Cover *tags* greedily: repeatedly pick the candidate rectangle covering
+    the most still-uncovered tags, breaking ties by the lexicographically
+    smallest expression string. Bounded to one candidate per tag and at most
+    one round per candidate.
+    """
+    index = {_tag_sort_key(tag): bit for bit, tag in enumerate(tags)}
+    candidates: dict[str, int] = {}
+    for tag in tags:
+        rectangle = _grow_rectangle(tag, interpreters, abis, cell_platforms)
+        if rectangle is None:
+            continue
+        iset, aset, pset = rectangle
+        mask = 0
+        for i in iset:
+            for a in aset:
+                for p in pset:
+                    mask |= 1 << index[(i, a, p)]
+        candidates[_format_compressed_tag(iset, aset, pset)] = mask
+
+    uncovered = (1 << len(tags)) - 1
+    chosen = []
+    while uncovered:
+        expression, mask = min(
+            candidates.items(),
+            key=lambda item: (-(item[1] & uncovered).bit_count(), item[0]),
+        )
+        chosen.append(expression)
+        uncovered &= ~mask
+    return tuple(sorted(chosen))
+
+
+def compress_tags(tags: Iterable[Tag], *, exact_limit: int = 32) -> CompressedTags:
+    """
+    Compress a collection of tags into a list of compressed tag set
+    expressions (e.g. ``"py2.py3-none-any"``).
+
+    Each expression denotes the Cartesian product of its interpreter, ABI,
+    and platform components, so parsing every returned expression with
+    :func:`parse_tag` and unioning the results reproduces exactly the
+    (deduplicated) input set -- components are never merged independently
+    in a way that would introduce extra tag combinations. Expressions may
+    overlap; a tag can be covered by more than one expression.
+
+    The input is deduplicated and sorted by ``(interpreter, abi, platform)``
+    before compression, so the output is deterministic regardless of input
+    order. The returned expressions are sorted as strings and use sorted
+    components, so they satisfy :func:`parse_tag` with
+    ``validate_order=True``.
+
+    The cost objective is fixed: minimize the number of expressions. When
+    the deduplicated input has at most *exact_limit* tags and at most 6
+    distinct values per component, an exact minimum cover is computed
+    (``strategy == "exact"``, ``optimal == True``), with ties broken by the
+    lexicographically smallest sorted tuple of expressions. Otherwise a
+    bounded greedy heuristic is used (``strategy == "greedy"``); the result
+    is still a valid exact cover of the input, and ``optimal`` reports
+    whether minimality is proven (a single expression covering a non-empty
+    set is trivially optimal).
+
+    :param tags: The tags to compress.
+    :param int exact_limit: Maximum number of deduplicated tags for which
+        the exact minimum cover is computed.
+
+    .. versionadded:: 26.4
+    """
+    unique = sorted(set(tags), key=_tag_sort_key)
+    if not unique:
+        return CompressedTags((), True, "exact")
+
+    interpreters = sorted({tag.interpreter for tag in unique})
+    abis = sorted({tag.abi for tag in unique})
+    platforms = sorted({tag.platform for tag in unique})
+
+    cell_platforms: dict[tuple[str, str], set[str]] = {}
+    for tag in unique:
+        cell_platforms.setdefault((tag.interpreter, tag.abi), set()).add(
+            tag.platform
+        )
+    frozen_cells = {cell: frozenset(ps) for cell, ps in cell_platforms.items()}
+
+    if (
+        len(unique) <= exact_limit
+        and max(len(interpreters), len(abis), len(platforms))
+        <= _EXACT_DIMENSION_LIMIT
+    ):
+        rectangles = _maximal_rectangles(
+            interpreters, abis, platforms, frozen_cells
+        )
+        return CompressedTags(_exact_cover(unique, rectangles), True, "exact")
+
+    expressions = _greedy_cover(unique, interpreters, abis, frozen_cells)
+    # A single expression covering a non-empty set cannot be improved upon.
+    optimal = len(expressions) == 1
+    return CompressedTags(expressions, optimal, "greedy")
 
 
 def _get_config_var(name: str, warn: bool = False) -> int | str | None:

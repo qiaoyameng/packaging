@@ -4,6 +4,12 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :func:`~packaging.tags.compress_tags` to compress a collection of
+  tags into a list of compressed tag set expressions whose expansion
+  reproduces the input exactly.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)
