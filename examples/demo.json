@@ -1,0 +1,83 @@
+{
+  "plugins": [
+    {
+      "name": "build-core",
+      "requires_dist": [
+        "flask>=2.0",
+        "requests[security]>=2.28",
+        "structlog",
+        "orjson>=3 ; extra == 'speed'"
+      ]
+    },
+    {
+      "name": "build-extra",
+      "requires_dist": [
+        "flask<2 ; sys_platform == 'win32'",
+        "requests[socks]!=2.30.*",
+        "numpy===1.26-windows-tag ; sys_platform == 'win32'",
+        "flask<3 ; sys_platform == 'win32'"
+      ]
+    },
+    {
+      "name": "source-plugin",
+      "requires_dist": [
+        "libx @ https://example.invalid/libx-1.tar.gz ; sys_platform != 'win32'",
+        "libx @ https://mirror.invalid/libx-2.zip ; sys_platform != 'win32'",
+        "liby @ https://example.invalid/liby-9.tar.gz"
+      ]
+    },
+    {
+      "name": "vault-plugin",
+      "requires_dist": [
+        "liby @ https://example.invalid/liby-9.tar.gz",
+        "liby>=8"
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "name": "win-speed-1",
+      "extras": [
+        "Speed"
+      ],
+      "environment": {
+        "sys_platform": "win32",
+        "os_name": "nt",
+        "platform_system": "Windows",
+        "python_full_version": "3.12.4"
+      }
+    },
+    {
+      "name": "win-speed-2",
+      "extras": [
+        "speed"
+      ],
+      "environment": {
+        "sys_platform": "win32",
+        "os_name": "nt",
+        "platform_system": "Windows",
+        "python_version": "3.11"
+      }
+    },
+    {
+      "name": "linux-bare",
+      "extras": [],
+      "environment": {
+        "sys_platform": "linux",
+        "os_name": "posix",
+        "platform_system": "Linux",
+        "python_full_version": "3.12.4"
+      }
+    },
+    {
+      "name": "macos-bare",
+      "extras": [],
+      "environment": {
+        "sys_platform": "darwin",
+        "os_name": "posix",
+        "platform_system": "Darwin",
+        "python_version": "3.11"
+      }
+    }
+  ]
+}
