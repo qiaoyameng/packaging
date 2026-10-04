@@ -210,3 +210,37 @@ def test_parse_elf_bad_executable(content: str | None) -> None:
     # None is not supported in the type annotation, but it was tested before.
     with _parse_elf(path_str) as ef:  # type: ignore[arg-type]
         assert ef is None
+
+
+def test_glibc_platform_tags_does_not_inspect_host() -> None:
+    # The offline generator must not call any host-probing helpers.
+    tags = list(_manylinux.glibc_platform_tags(["x86_64"], (2, 28)))
+    assert tags[0] == "manylinux_2_28_x86_64"
+    assert tags[-1] == "manylinux1_x86_64"
+    assert "manylinux_2_29_x86_64" not in tags
+    assert "manylinux2014_x86_64" in tags
+    assert "manylinux2010_x86_64" in tags
+
+
+def test_glibc_platform_tags_aarch64_floor() -> None:
+    tags = list(_manylinux.glibc_platform_tags(["aarch64"], (2, 17)))
+    assert tags == ["manylinux_2_17_aarch64", "manylinux2014_aarch64"]
+
+
+def test_glibc_platform_tags_matches_host_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With an explicit glibc version the output equals the host-based
+    # generator pointed at that same version (minus ELF/module checks).
+    monkeypatch.setattr(_manylinux, "_get_glibc_version", lambda: _GLibCVersion(2, 20))
+    monkeypatch.setattr(_manylinux, "_have_compatible_abi", lambda exe, archs: True)
+    monkeypatch.setattr(_manylinux, "_is_compatible", lambda arch, version: True)
+    host_tags = list(_manylinux.platform_tags(["x86_64"]))
+    offline_tags = list(
+        _manylinux._glibc_platform_tags(  # type: ignore[attr-defined]
+            ["x86_64"],
+            _GLibCVersion(2, 20),
+            lambda arch, version: True,
+        )
+    )
+    assert offline_tags == host_tags

@@ -4,6 +4,16 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :mod:`packaging.target` for offline target environment selection:
+  :class:`~packaging.target.TargetProfile` describes a CPython target with
+  an explicit interpreter version, ABI features, architecture and libc/OS
+  version (manylinux, musllinux, Windows and macOS), generates prioritized
+  compatibility tags, and evaluates/ranks candidate wheel filenames with
+  detailed explanations for rejections.  Missing information is reported as
+  insufficient instead of being inferred from the host machine.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)

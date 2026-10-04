@@ -95,3 +95,14 @@ def test_get_musl_version(
     else:
         expected_calls = []
     assert run_recorder.calls == expected_calls
+
+
+def test_musl_platform_tags_does_not_inspect_host() -> None:
+    assert list(_musllinux.musl_platform_tags(["x86_64"], (1, 2))) == [
+        "musllinux_1_2_x86_64",
+        "musllinux_1_1_x86_64",
+        "musllinux_1_0_x86_64",
+    ]
+    assert list(_musllinux.musl_platform_tags(["aarch64"], (1, 0))) == [
+        "musllinux_1_0_aarch64",
+    ]
