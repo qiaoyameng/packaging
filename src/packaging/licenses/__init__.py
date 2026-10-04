@@ -37,9 +37,15 @@ from typing import NewType, cast
 from ._spdx import EXCEPTIONS, LICENSES
 
 __all__ = [
+    "Decision",
+    "Evaluation",
+    "EvaluationStatus",
     "InvalidLicenseExpression",
     "NormalizedLicenseExpression",
+    "Option",
+    "PolicyRule",
     "canonicalize_license_expression",
+    "evaluate_license_policy",
 ]
 
 
@@ -196,3 +202,13 @@ def canonicalize_license_expression(
         "NormalizedLicenseExpression",
         normalized_expression.replace("( ", "(").replace(" )", ")"),
     )
+
+
+from ._policy import (  # noqa: E402
+    Decision,
+    Evaluation,
+    EvaluationStatus,
+    Option,
+    PolicyRule,
+    evaluate_license_policy,
+)
