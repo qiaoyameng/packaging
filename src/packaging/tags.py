@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import operator
 import platform
@@ -12,7 +13,7 @@ import struct
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from importlib.machinery import EXTENSION_SUFFIXES
 from typing import (
     TYPE_CHECKING,
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 __all__ = [
     "INTERPRETER_SHORT_NAMES",
     "AppleVersion",
+    "CompressedTags",
     "InvalidTag",
     "PythonVersion",
     "Tag",
@@ -37,6 +39,7 @@ __all__ = [
     "UnsortedTagsError",
     "android_platforms",
     "compatible_tags",
+    "compress_tags",
     "cpython_tags",
     "create_compatible_tags_selector",
     "generic_tags",
@@ -50,6 +53,9 @@ __all__ = [
     "pure_python_tags",
     "sys_tags",
 ]
+
+_EXACT_COMPRESSION_LIMIT = 16
+_GREEDY_BEAM_WIDTH = 64
 
 
 def __dir__() -> list[str]:
@@ -114,6 +120,27 @@ class TooManyTagsError(ValueError):
 
     .. versionadded:: 26.3
     """
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CompressedTags:
+    """
+    A compressed representation of a set of :class:`Tag` instances.
+
+    Each member of :attr:`expressions` is a PEP 425 compressed tag set. The
+    union of parsing all expressions is exactly the set supplied to
+    :func:`compress_tags`.
+
+    :attr:`is_optimal` is true when the number of expressions has been proven
+    to be minimal. Heuristic results may still be marked optimal when a
+    rectangle-packing lower bound matches the result.
+
+    .. versionadded:: 26.4
+    """
+
+    expressions: tuple[str, ...]
+    is_optimal: bool
+    strategy: str
 
 
 class Tag:
@@ -229,6 +256,362 @@ class Tag:
                 self._hash = hash((self._interpreter, self._abi, self._platform))
                 return
         raise TypeError(f"Cannot restore Tag from {state!r}")
+
+
+_TagTriple = tuple[str, str, str]
+_TagDimensions = tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]
+
+
+def _tag_triple(tag: Tag) -> _TagTriple:
+    return (tag.interpreter, tag.abi, tag.platform)
+
+
+def _serialize_dimensions(dimensions: _TagDimensions) -> str:
+    interpreters, abis, platforms = dimensions
+    return ".".join(interpreters) + "-" + ".".join(abis) + "-" + ".".join(platforms)
+
+
+def _normalise_tags(tags: Iterable[Tag]) -> list[_TagTriple]:
+    tag_triples: set[_TagTriple] = set()
+    for tag in tags:
+        if not isinstance(tag, Tag):
+            raise TypeError("tags must contain Tag instances")
+        triple = _tag_triple(tag)
+        for position, value in enumerate(triple):
+            if not value:
+                raise InvalidTag("Tag components must not be empty")
+            if "." in value or "-" in value:
+                raise InvalidTag(
+                    f"Tag component {value!r} contains a compressed-tag "
+                    "separator"
+                )
+            if position == 0 and not value.isidentifier():
+                raise InvalidTag(f"Tag has an invalid interpreter: {value!r}")
+        tag_triples.add(triple)
+    return sorted(tag_triples)
+
+
+def _dimension_values(
+    tag_triples: Sequence[_TagTriple],
+) -> tuple[list[str], list[str], list[str]]:
+    return (
+        sorted({triple[0] for triple in tag_triples}),
+        sorted({triple[1] for triple in tag_triples}),
+        sorted({triple[2] for triple in tag_triples}),
+    )
+
+
+def _value_masks(
+    tag_triples: Sequence[_TagTriple],
+) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    interpreter_masks: dict[str, int] = {}
+    abi_masks: dict[str, int] = {}
+    platform_masks: dict[str, int] = {}
+    for index, (interpreter, abi, platform) in enumerate(tag_triples):
+        bit = 1 << index
+        interpreter_masks[interpreter] = interpreter_masks.get(interpreter, 0) | bit
+        abi_masks[abi] = abi_masks.get(abi, 0) | bit
+        platform_masks[platform] = platform_masks.get(platform, 0) | bit
+    return interpreter_masks, abi_masks, platform_masks
+
+
+def _enumerate_rectangles(
+    tag_triples: Sequence[_TagTriple],
+) -> list[tuple[int, str, _TagDimensions]]:
+    tag_set = frozenset(tag_triples)
+    rectangles: set[_TagDimensions] = set()
+
+    for mask in range(1, 1 << len(tag_triples)):
+        selected = [
+            tag_triples[index]
+            for index in range(len(tag_triples))
+            if mask & (1 << index)
+        ]
+        dimensions = (
+            tuple(sorted({triple[0] for triple in selected})),
+            tuple(sorted({triple[1] for triple in selected})),
+            tuple(sorted({triple[2] for triple in selected})),
+        )
+        if dimensions in rectangles:
+            continue
+        rectangle_size = len(dimensions[0]) * len(dimensions[1]) * len(dimensions[2])
+        if rectangle_size > len(tag_triples):
+            continue
+        if all(
+            (interpreter, abi, platform) in tag_set
+            for interpreter in dimensions[0]
+            for abi in dimensions[1]
+            for platform in dimensions[2]
+        ):
+            rectangles.add(dimensions)
+
+    candidates: list[tuple[int, str, _TagDimensions]] = []
+    for dimensions in rectangles:
+        mask = 0
+        for index, triple in enumerate(tag_triples):
+            if (
+                triple[0] in dimensions[0]
+                and triple[1] in dimensions[1]
+                and triple[2] in dimensions[2]
+            ):
+                mask |= 1 << index
+        expression = _serialize_dimensions(dimensions)
+        candidates.append((mask, expression, dimensions))
+
+    candidates.sort(
+        key=lambda candidate: (
+            -candidate[0].bit_count(),
+            len(candidate[1]),
+            candidate[1],
+        )
+    )
+    return candidates
+
+
+def _exact_rectangle_cover(
+    tag_triples: Sequence[_TagTriple],
+    candidates: Sequence[tuple[int, str, _TagDimensions]],
+) -> tuple[str, ...]:
+    full_mask = (1 << len(tag_triples)) - 1
+    memo: dict[int, tuple[int, int, tuple[str, ...]]] = {}
+
+    def cover(covered: int) -> tuple[int, int, tuple[str, ...]]:
+        if covered == full_mask:
+            return (0, 0, ())
+        if covered in memo:
+            return memo[covered]
+
+        target = (covered ^ full_mask) & -(covered ^ full_mask)
+        best: tuple[int, int, tuple[str, ...]] | None = None
+        for mask, expression, _dimensions in candidates:
+            if not (mask & target):
+                continue
+            added = mask & ~covered
+            if added == 0:
+                continue
+            child_count, child_length, child_expressions = cover(covered | mask)
+            expressions = tuple(sorted((expression, *child_expressions)))
+            result = (
+                child_count + 1,
+                child_length + len(expression),
+                expressions,
+            )
+            if best is None or result < best:
+                best = result
+
+        assert best is not None
+        memo[covered] = best
+        return best
+
+    return cover(0)[2]
+
+
+def _dimensions_mask(
+    dimensions: _TagDimensions,
+    interpreter_masks: Mapping[str, int],
+    abi_masks: Mapping[str, int],
+    platform_masks: Mapping[str, int],
+) -> int:
+    interpreters, abis, platforms = dimensions
+    return (
+        _union_mask(interpreters, interpreter_masks)
+        & _union_mask(abis, abi_masks)
+        & _union_mask(platforms, platform_masks)
+    )
+
+
+def _legal_rectangle(
+    dimensions: _TagDimensions,
+    mask: int,
+    tag_triples: Sequence[_TagTriple],
+) -> bool:
+    interpreters, abis, platforms = dimensions
+    expected_size = len(interpreters) * len(abis) * len(platforms)
+    if expected_size > len(tag_triples):
+        return False
+    return mask.bit_count() == expected_size
+
+
+def _greedy_rectangle_cover(
+    tag_triples: Sequence[_TagTriple],
+    interpreters: Sequence[str],
+    abis: Sequence[str],
+    platforms: Sequence[str],
+    interpreter_masks: Mapping[str, int],
+    abi_masks: Mapping[str, int],
+    platform_masks: Mapping[str, int],
+) -> tuple[str, ...]:
+    remaining = (1 << len(tag_triples)) - 1
+    expressions: list[str] = []
+
+    while remaining:
+        target_index = (remaining & -remaining).bit_length() - 1
+        interpreter, abi, platform = tag_triples[target_index]
+        initial_dimensions: _TagDimensions = ((interpreter,), (abi,), (platform,))
+        frontier: list[tuple[_TagDimensions, int]] = [(
+            initial_dimensions,
+            _dimensions_mask(
+                initial_dimensions,
+                interpreter_masks,
+                abi_masks,
+                platform_masks,
+            ),
+        )]
+        best_dimensions = initial_dimensions
+        best_mask = frontier[0][1]
+        best_score = (
+            (best_mask & remaining).bit_count(),
+            len(_serialize_dimensions(best_dimensions)),
+            _serialize_dimensions(best_dimensions),
+        )
+
+        while frontier:
+            next_states: dict[_TagDimensions, int] = {}
+
+            def add_state(next_dimensions: _TagDimensions) -> None:
+                if next_dimensions in next_states:
+                    return
+                next_mask = _dimensions_mask(
+                    next_dimensions,
+                    interpreter_masks,
+                    abi_masks,
+                    platform_masks,
+                )
+                if not _legal_rectangle(next_dimensions, next_mask, tag_triples):
+                    return
+                next_states[next_dimensions] = next_mask
+
+            for (
+                state_interpreters,
+                state_abis,
+                state_platforms,
+            ), _state_mask in frontier:
+                for value in interpreters:
+                    if value not in state_interpreters:
+                        add_state((
+                            tuple(sorted((*state_interpreters, value))),
+                            state_abis,
+                            state_platforms,
+                        ))
+                for value in abis:
+                    if value not in state_abis:
+                        add_state((
+                            state_interpreters,
+                            tuple(sorted((*state_abis, value))),
+                            state_platforms,
+                        ))
+                for value in platforms:
+                    if value not in state_platforms:
+                        add_state((
+                            state_interpreters,
+                            state_abis,
+                            tuple(sorted((*state_platforms, value))),
+                        ))
+
+            ranked = sorted(
+                next_states.items(),
+                key=lambda item: (
+                    -((item[1] & remaining).bit_count()),
+                    len(_serialize_dimensions(item[0])),
+                    _serialize_dimensions(item[0]),
+                ),
+            )
+            frontier = ranked[:_GREEDY_BEAM_WIDTH]
+            for dimensions, mask in frontier:
+                score = (
+                    (mask & remaining).bit_count(),
+                    len(_serialize_dimensions(dimensions)),
+                    _serialize_dimensions(dimensions),
+                )
+                if score > best_score:
+                    best_score = score
+                    best_dimensions = dimensions
+                    best_mask = mask
+
+        expressions.append(_serialize_dimensions(best_dimensions))
+        remaining &= ~best_mask
+
+    return tuple(sorted(expressions))
+
+
+def _union_mask(values: Iterable[str], masks: Mapping[str, int]) -> int:
+    mask = 0
+    for value in values:
+        mask |= masks[value]
+    return mask
+
+
+def _rectangle_packing_lower_bound(tag_triples: Sequence[_TagTriple]) -> int:
+    tag_set = frozenset(tag_triples)
+    chosen: list[_TagTriple] = []
+    for triple in tag_triples:
+        if all(not _is_rectangle(triple, other, tag_set) for other in chosen):
+            chosen.append(triple)
+    return len(chosen)
+
+
+def _is_rectangle(
+    first: _TagTriple, second: _TagTriple, tag_set: AbstractSet[_TagTriple]
+) -> bool:
+    return all(
+        (interpreter, abi, platform) in tag_set
+        for interpreter in (first[0], second[0])
+        for abi in (first[1], second[1])
+        for platform in (first[2], second[2])
+    )
+
+
+def compress_tags(tags: Iterable[Tag]) -> CompressedTags:
+    """
+    Compress a set of tags into sorted PEP 425 compressed tag expressions.
+
+    Every returned expression represents one Cartesian product of interpreter,
+    ABI, and platform components. Compression therefore never independently
+    merges the three columns; a merge is used only when the resulting full
+    rectangle is present in **tags**. Rectangles may overlap between returned
+    expressions.
+
+    Results are deterministic. The primary billing target is the number of
+    expressions, followed by the total serialized length, with lexicographic
+    order used as the final tie-breaker.
+
+    Sets of up to 16 tags are solved with an exact minimum rectangle cover.
+    Larger sets use a bounded beam-search greedy algorithm. For heuristic
+    results, :attr:`CompressedTags.is_optimal` is still true when a
+    rectangle-packing lower bound proves that the returned expression count is
+    minimal.
+
+    :raises TypeError: If **tags** contains a non-:class:`Tag` value.
+    :raises InvalidTag: If a tag component cannot be represented in a PEP 425
+        compressed tag expression.
+    """
+    tag_triples = _normalise_tags(tags)
+
+    if not tag_triples:
+        return CompressedTags((), True, "exact-minimum-rectangle-cover")
+
+    if len(tag_triples) <= _EXACT_COMPRESSION_LIMIT:
+        candidates = _enumerate_rectangles(tag_triples)
+        expressions = _exact_rectangle_cover(tag_triples, candidates)
+        return CompressedTags(expressions, True, "exact-minimum-rectangle-cover")
+
+    interpreters, abis, platforms = _dimension_values(tag_triples)
+    interpreter_masks, abi_masks, platform_masks = _value_masks(tag_triples)
+    expressions = _greedy_rectangle_cover(
+        tag_triples,
+        interpreters,
+        abis,
+        platforms,
+        interpreter_masks,
+        abi_masks,
+        platform_masks,
+    )
+    lower_bound = _rectangle_packing_lower_bound(tag_triples)
+    return CompressedTags(
+        expressions,
+        len(expressions) == lower_bound,
+        "bounded-greedy-rectangle-cover",
+    )
 
 
 def parse_tag(

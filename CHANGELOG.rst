@@ -4,6 +4,14 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :func:`~packaging.tags.compress_tags` and
+  :class:`~packaging.tags.CompressedTags` for compressing a tag set into PEP
+  425 compressed tag expressions while preserving its exact Cartesian-product
+  union. Small sets use an exact minimum rectangle cover; larger sets use a
+  bounded greedy algorithm and report whether optimality was proven.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)

@@ -265,6 +265,166 @@ class TestParseTag:
             tags.parse_tag(tag)
 
 
+class TestCompressTags:
+    def _expand(self, expressions: collections.abc.Iterable[str]) -> set[tags.Tag]:
+        expanded: set[tags.Tag] = set()
+        for expression in expressions:
+            expanded |= tags.parse_tag(expression, validate_order=True)
+        return expanded
+
+    def test_empty_set(self) -> None:
+        result = tags.compress_tags(())
+
+        assert result.expressions == ()
+        assert result.is_optimal
+        assert result.strategy == "exact-minimum-rectangle-cover"
+        assert self._expand(result.expressions) == set()
+
+    def test_deduplicates_and_uses_stable_order(self) -> None:
+        input_tags = [
+            tags.Tag("py4", "none", "b"),
+            tags.Tag("py3", "none", "a"),
+            tags.Tag("py3", "none", "b"),
+            tags.Tag("py4", "none", "a"),
+            tags.Tag("py3", "none", "a"),
+        ]
+
+        result = tags.compress_tags(input_tags)
+
+        assert result.expressions == ("py3.py4-none-a.b",)
+        assert result.is_optimal
+        assert self._expand(result.expressions) == set(input_tags)
+
+    def test_lexicographic_component_order(self) -> None:
+        result = tags.compress_tags(
+            [tags.Tag("py2", "none", "a"), tags.Tag("py10", "none", "a")]
+        )
+
+        assert result.expressions == ("py10.py2-none-a",)
+        assert self._expand(result.expressions) == {
+            tags.Tag("py2", "none", "a"),
+            tags.Tag("py10", "none", "a"),
+        }
+
+    def test_non_rectangle_requires_multiple_expressions(self) -> None:
+        input_tags = {
+            tags.Tag("py3", "none", "a"),
+            tags.Tag("py3", "none", "b"),
+            tags.Tag("py4", "none", "a"),
+        }
+
+        result = tags.compress_tags(input_tags)
+
+        assert result.expressions == ("py3-none-a.b", "py4-none-a")
+        assert result.is_optimal
+        assert self._expand(result.expressions) == input_tags
+
+    def test_overlapping_rectangles_are_allowed(self) -> None:
+        input_tags = {
+            tags.Tag("py3", "none", "p"),
+            tags.Tag("py4", "none", "p"),
+            tags.Tag("py3", "none", "q"),
+            tags.Tag("py4", "none", "q"),
+            tags.Tag("py4", "none", "r"),
+            tags.Tag("py5", "none", "q"),
+            tags.Tag("py5", "none", "r"),
+        }
+
+        result = tags.compress_tags(input_tags)
+
+        assert result.expressions == (
+            "py3.py4-none-p.q",
+            "py4.py5-none-q.r",
+        )
+        assert result.is_optimal
+        expanded = [
+            tags.parse_tag(expression, validate_order=True)
+            for expression in result.expressions
+        ]
+        assert expanded[0] & expanded[1] == {tags.Tag("py4", "none", "q")}
+        assert set().union(*expanded) == input_tags
+
+    def test_independent_column_compression_has_four_illegal_tags(self) -> None:
+        input_tags = {
+            tags.Tag("py3", "none", "a"),
+            tags.Tag("py3", "abi", "b"),
+            tags.Tag("py4", "none", "b"),
+            tags.Tag("py4", "abi", "a"),
+        }
+        independent_expression = "py3.py4-abi.none-a.b"
+        illegally_added = tags.parse_tag(independent_expression) - input_tags
+
+        result = tags.compress_tags(input_tags)
+
+        assert illegally_added == {
+            tags.Tag("py3", "abi", "a"),
+            tags.Tag("py3", "none", "b"),
+            tags.Tag("py4", "abi", "b"),
+            tags.Tag("py4", "none", "a"),
+        }
+        assert result.expressions == (
+            "py3-abi-b",
+            "py3-none-a",
+            "py4-abi-a",
+            "py4-none-b",
+        )
+        assert result.is_optimal
+        assert self._expand(result.expressions) == input_tags
+
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            tags.Tag("", "none", "a"),
+            tags.Tag("py3", "", "a"),
+            tags.Tag("py3", "none", ""),
+            tags.Tag("3", "none", "a"),
+            tags.Tag("py3", "ab.i", "a"),
+            tags.Tag("py3", "ab-i", "a"),
+            tags.Tag("py3", "none", "a.b"),
+            tags.Tag("py3", "none", "a-b"),
+        ],
+    )
+    def test_invalid_tag_component_raises(self, tag: tags.Tag) -> None:
+        with pytest.raises(tags.InvalidTag):
+            tags.compress_tags([tag])
+
+    def test_non_tag_input_raises(self) -> None:
+        with pytest.raises(TypeError, match="Tag instances"):
+            tags.compress_tags(["py3-none-a"])  # type: ignore[list-item]
+
+    def test_heuristic_strategy_reports_proven_optimal(self) -> None:
+        input_tags = [
+            tags.Tag(f"py{index}", f"abi{index}", f"platform{index}")
+            for index in range(17)
+        ]
+
+        result = tags.compress_tags(input_tags)
+
+        assert len(result.expressions) == 17
+        assert result.is_optimal
+        assert result.strategy == "bounded-greedy-rectangle-cover"
+        assert self._expand(result.expressions) == set(input_tags)
+
+    def test_heuristic_strategy_can_report_unproven_optimal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            tags, "_rectangle_packing_lower_bound", lambda _tag_triples: 0
+        )
+        input_tags = [tags.Tag(f"py{index}", "none", "a") for index in range(17)]
+
+        result = tags.compress_tags(input_tags)
+        expected = (
+            "py0.py1.py10.py11.py12.py13.py14.py15.py16."
+            "py2.py3.py4.py5.py6.py7.py8.py9-none-a",
+        )
+
+        assert result.expressions == expected
+        assert not result.is_optimal
+        assert result.strategy == "bounded-greedy-rectangle-cover"
+        assert self._expand(result.expressions) == set(input_tags)
+
+
 class TestInterpreterName:
     def test_sys_implementation_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class MockImplementation:

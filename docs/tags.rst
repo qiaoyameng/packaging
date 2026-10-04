@@ -42,7 +42,12 @@ items that applications should need to reference, in order to parse and check ta
 .. autoclass:: Tag
    :members:
 
+.. autoclass:: CompressedTags
+   :members:
+
 .. autofunction:: parse_tag
+
+.. autofunction:: compress_tags
 
 .. autofunction:: sys_tags
 
