@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import NewType, cast
 
-from .tags import InvalidTag, Tag, UnsortedTagsError, parse_tag
+from .tags import InvalidTag, Tag, TooManyTagsError, UnsortedTagsError, parse_tag
 from .version import InvalidVersion, Version, _TrimmedRelease
 
 __all__ = [
@@ -201,6 +201,7 @@ def parse_wheel_filename(
     filename: str,
     *,
     validate_order: bool = False,
+    limit: int | None = None,
 ) -> tuple[NormalizedName, Version, BuildTag, frozenset[Tag]]:
     """
     This function takes the filename of a wheel file, and parses it,
@@ -219,9 +220,14 @@ def parse_wheel_filename(
     If **validate_order** is true, compressed tag set components are
     checked to be in sorted order as required by PEP 425.
 
+    If **limit** is not ``None``, the compressed tag set in the wheel
+    filename can generate at most that many tags.
+
     :param str filename: The name of the wheel file.
     :param bool validate_order: Check whether compressed tag set components
         are in sorted order.
+    :param int | None limit: The maximum number of tags the compressed tag
+        set in the filename can generate.
     :raises InvalidWheelFilename: If the filename in question
         does not follow the :ref:`wheel specification
         <pypug:binary-distribution-format>`.
@@ -246,6 +252,9 @@ def parse_wheel_filename(
 
     .. versionadded:: 26.1
        The *validate_order* parameter.
+
+    .. versionadded:: 26.4
+       The *limit* parameter.
 
     .. versionchanged:: 26.3
        Raises :class:`InvalidWheelFilename` when an interpreter component is
@@ -290,11 +299,16 @@ def parse_wheel_filename(
         build = ()
     tag_str = parts[-1]
     try:
-        tags = parse_tag(tag_str, validate_order=validate_order)
+        tags = parse_tag(tag_str, validate_order=validate_order, limit=limit)
     except UnsortedTagsError:
         raise InvalidWheelFilename(
             f"Invalid wheel filename (compressed tag set components must be in "
             f"sorted order per PEP 425): {filename!r}"
+        ) from None
+    except TooManyTagsError:
+        raise InvalidWheelFilename(
+            f"Invalid wheel filename (compressed tag set generates more than "
+            f"{limit} tags): {filename!r}"
         ) from None
     except InvalidTag:
         raise InvalidWheelFilename(

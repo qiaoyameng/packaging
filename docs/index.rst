@@ -31,6 +31,7 @@ The ``packaging`` library uses calendar-based versioning (``YY.N``).
     requirements
     metadata
     tags
+    target
     pylock
     direct_url
     dependency_groups

@@ -70,9 +70,31 @@ def platform_tags(archs: Sequence[str]) -> Iterator[str]:
     sys_musl = _get_musl_version(sys.executable)
     if sys_musl is None:  # Python not dynamically linked against musl.
         return
+    yield from platform_tags_for_musl(archs, (sys_musl.major, sys_musl.minor))
+
+
+def platform_tags_for_musl(
+    archs: Sequence[str], musl_version: tuple[int, int]
+) -> Iterator[str]:
+    """Generate musllinux tags for an explicitly specified musl version.
+
+    Unlike :func:`platform_tags`, this function never inspects the running
+    interpreter or system: the target musl version is provided explicitly,
+    making it suitable for offline target-environment description.
+
+    :param archs: Sequence of compatible architectures.
+        The first one shall be the closest to the actual architecture and be
+        the part of platform tag after the ``linux_`` prefix, e.g.
+        ``"x86_64"``.
+    :param musl_version: A ``(major, minor)`` pair of the musl version of
+        the target system.
+
+    :returns: An iterator of compatible musllinux tags.
+    """
+    major, minor = musl_version
     for arch in archs:
-        for minor in range(sys_musl.minor, -1, -1):
-            yield f"musllinux_{sys_musl.major}_{minor}_{arch}"
+        for patch in range(minor, -1, -1):
+            yield f"musllinux_{major}_{patch}_{arch}"
 
 
 if __name__ == "__main__":  # pragma: no cover

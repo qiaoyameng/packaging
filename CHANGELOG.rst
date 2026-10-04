@@ -4,6 +4,27 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :mod:`packaging.target`, an offline description of a target
+  interpreter environment. :class:`~packaging.target.TargetProfile` takes
+  an explicit interpreter version, ABI features, architecture, operating
+  system, and libc/system version (CPython on Linux manylinux/musllinux,
+  Windows, and macOS are supported) and generates prioritized compatibility
+  tags without reading :mod:`sysconfig` or the host. New
+  :meth:`~packaging.target.TargetProfile.evaluate_wheel` and
+  :meth:`~packaging.target.TargetProfile.select_wheels` methods report the
+  best matching tag or explain the interpreter/ABI/platform mismatch,
+  including abi3/abi3t, universal2, compressed tag sets, and build-tag
+  ordering.
+* Add ``limit`` argument to
+  :func:`~packaging.utils.parse_wheel_filename` to bound compressed tag
+  set expansion.
+* Add :func:`packaging._manylinux.platform_tags_for_glibc` and
+  :func:`packaging._musllinux.platform_tags_for_musl`, pure tag generators
+  that take the target libc version explicitly instead of inspecting the
+  running system.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)
