@@ -4,6 +4,18 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
+Features:
+
+* Add :func:`evaluate_license_expression`, which evaluates a normalized
+  License-Expression against an explicit caller-supplied policy. ``AND``
+  unions obligation labels, ``OR`` enumerates alternative plans, and
+  ``license WITH exception`` is treated as one atomic policy key. Plans
+  dominated by a plan with a strict subset of obligations are removed while
+  equal-cost branches are retained; unnamed licenses (including
+  ``LicenseRef-`` identifiers) are unknown rather than implicitly allowed; and
+  enumeration is bounded by an explicit plan budget that yields an
+  ``incomplete`` verdict instead of claiming no acceptable branch exists.
+
 Removals:
 
 * Drop support for EOL Python 3.9. (:pull:`1263`)

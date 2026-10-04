@@ -34,12 +34,32 @@ from __future__ import annotations
 import re
 from typing import NewType, cast
 
+from ._policy import (
+    LicenseChoice,
+    LicenseDecision,
+    LicenseEvaluation,
+    LicenseLeaf,
+    LicensePlan,
+    LicenseVerdict,
+    Policy,
+    PolicyRule,
+    evaluate_license_expression,
+)
 from ._spdx import EXCEPTIONS, LICENSES
 
 __all__ = [
     "InvalidLicenseExpression",
+    "LicenseChoice",
+    "LicenseDecision",
+    "LicenseEvaluation",
+    "LicenseLeaf",
+    "LicensePlan",
+    "LicenseVerdict",
     "NormalizedLicenseExpression",
+    "Policy",
+    "PolicyRule",
     "canonicalize_license_expression",
+    "evaluate_license_expression",
 ]
 
 
@@ -196,3 +216,4 @@ def canonicalize_license_expression(
         "NormalizedLicenseExpression",
         normalized_expression.replace("( ", "(").replace(" )", ")"),
     )
+
